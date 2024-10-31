@@ -1,0 +1,7 @@
+/__pycache__
+/HP_powerTimeseries
+/.idea
+*.csv
+*.xlsx
+*.ipynb
+*.npy

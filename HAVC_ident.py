@@ -7,13 +7,12 @@ Created on Wed May 31 20:00:20 2023
 """HVAC identifiaction from time series of elctricity consummptions using different ML techniques """
 
 #%%
-import pandas,h5py,numpy,copy,re
+import pandas,h5py,numpy,copy
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-import matplotlib.pyplot as plt
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
@@ -22,6 +21,15 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import confusion_matrix,ConfusionMatrixDisplay
+from pathlib import Path
+import pandas as pd
+import numpy as np
+
+
+FILENAME_DATA_2018 = Path(__file__).parent / 'HP_powerTimeseries' / '2018_data_15min.hdf5'
+FILENAME_DATA_2019 = Path(__file__).parent / 'HP_powerTimeseries' / '2019_data_15min.hdf5'
+
+
 # a class for extracting the subsets of the datsets from hdf5 files
 class H5ls:
     def __init__(self):
@@ -116,22 +124,19 @@ plt.show()
 ###### ###### ######  ###### ######
 ###### ###### ###### ###### ###### ######
 ###### ###### ###### ###### ###### ######
-fileName="HP_powerTimeseries/2018_data_15min.hdf5"
-file = h5py.File(fileName, 'r')
-visitor = H5ls()
-file.visititems(visitor)
-dset_names = visitor.names
-Load_time_series=pandas.DataFrame()
-for i in range(len(dset_names)):
-    Load_time_series['2018_'+dset_names[i]]=pandas.read_hdf(fileName,dset_names[i]).drop(columns="index").P_TOT
-fileName="HP_powerTimeseries/2019_data_15min.hdf5"
-file = h5py.File(fileName, 'r')
-visitor = H5ls()
-file.visititems(visitor)
-dset_names = visitor.names
-for i in range(len(dset_names)):
-    Load_time_series['2019_'+dset_names[i]]=pandas.read_hdf(fileName,dset_names[i]).drop(columns="index").P_TOT    
-#
+def hdf5_to_df(filename, col_name_prefix):
+    time_series = []
+    file = h5py.File(filename, 'r')
+    visitor = H5ls()
+    file.visititems(visitor)
+    dset_names = visitor.names
+    for i in range(len(dset_names)):
+        time_series.append(h5py.File(filename, 'r')[dset_names[i]]['P_TOT'])
+    df = pd.DataFrame(data = np.vstack(time_series).T, columns = [f'{col_name_prefix}_{item}' for item in dset_names])
+    return df
+
+Load_time_series = pd.concat([hdf5_to_df(FILENAME_DATA_2018, '2018'), hdf5_to_df(FILENAME_DATA_2019, '2019')], axis = 1)
+
 # Drop the columns that are not usefull due to lack of information about them
 Load_time_series = Load_time_series.drop(columns=Load_time_series.columns[Load_time_series.columns.str.contains("MISC")])
 #Load_time_series = Load_time_series.drop(columns=Load_time_series.columns[Load_time_series.columns.str.contains("WITH_PV")])
@@ -272,12 +277,15 @@ ax.set_title("Feature importances based on mean decrease in impurity ()")
 ax.set_ylabel("Mean decrease in impurity")
 ax.set_xlabel("Feature")
 fig.tight_layout()
+########
 # %%
-# after this excercise we train the final model with onlythe second half and only using histogram gradient boosting. 
-classifier=HistGradientBoostingClassifier()
-
-Month_start=7
-Month_end=12+1 #typical python problem with indices
+# after this excercise we train the final model with only the second half and only using histogram gradient boosting. 
+from sklearn.model_selection import GridSearchCV
+# Assume you have your data loaded and split into X_train, X_test, y_train, y_test
+#Month_start=1
+Month_start = 4
+#Month_end=12+1 #typical python problem with indices
+Month_end = 12
 X=df[['ind_M_{}'.format(i) for i in range(Month_start, Month_end)]]
 X=imputer.fit_transform(X)
 #give the lables to the dataset to prepare for training and test sets
@@ -287,18 +295,34 @@ Y=df.Labels
 test_size_ratio=0.2
 X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=test_size_ratio , shuffle=True,random_state=None)
 
-classifier.fit(X_train, y_train)
-y_pred = classifier.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print(accuracy)
+# Define the HistGradientBoostingClassifier
+hist_gbm = HistGradientBoostingClassifier()
+# Define the parameter grid for hyperparameter tuning
+param_grid = {
+    'learning_rate': [0.01, 0.1, 0.5],
+    'max_iter': [50, 100, 200],
+    'max_depth': [3, 5, 7],
+    'min_samples_leaf': [1, 2, 4]
+}
+# Perform grid search cross-validation
+grid_search = GridSearchCV(estimator=hist_gbm, param_grid=param_grid, cv=5, scoring='accuracy')
+grid_search.fit(X_train, y_train)
 
+# Get the best parameters and best estimator
+best_params = grid_search.best_params_
+best_hist_gbm = grid_search.best_estimator_
+
+# Evaluate the model on the test set
+y_pred = best_hist_gbm.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+print("Accuracy:", accuracy)
 
 def HP_PV_label(Elec_timeSeries):
     ## whcih features you want to use? for now months 6 and 12 are prefered
-    Month_start=6
+    Month_start=4
     Month_end=12
     x = test_data_cleaned.resample('M').mean()/test_data_cleaned.resample('M').max()
-    predictions = classifier.predict(x[Month_start:Month_end].transpose())
+    predictions = grid_search.predict(x[Month_start:Month_end].transpose())
     return predictions    
 
 #####
@@ -319,3 +343,4 @@ test_data_cleaned.set_index(index_time, inplace=True)
 #you need to avoid NAN
 # make sure your missing points are less than 5% of total numebr of samples
 HP_PV_label(test_data_cleaned)
+#### test
